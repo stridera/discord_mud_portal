@@ -50,10 +50,9 @@ def main():
 
     @client.event
     async def on_message(message):
-        if message.author == client.user:
+        if message.author == client.user or message.channel.id != client.mud_channel:
             return
         try:
-            print(f'From Discord Line: {message.author.name}: {message.content}')
             client.to_mud.write(f'gossip {message.author.name}: {message.content}\n'.encode())
             await client.to_mud.drain()
         except Exception as e:
