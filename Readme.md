@@ -1,4 +1,8 @@
 # Discord <=> Mud portal bot
+This is a bot that will connect to your mud and provide a portal between your game and a discord channel.  Allows people
+to stay in touch when they're not logged in.
+
+Will require some minor changes to make it work with other muds.
 
 ## Install Steps
 
