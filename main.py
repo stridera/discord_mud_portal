@@ -1,7 +1,6 @@
 import asyncio
 import discord
 from discord import app_commands
-from discord.ext import tasks
 import re
 
 from config import Config
@@ -22,6 +21,7 @@ class MudClient(discord.Client):
         self.from_mud = None
         self.mud_input = ""
         self.online = []
+        self.reconnecting = False
 
         self.ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
@@ -43,40 +43,65 @@ def main():
     async def on_ready():
         print(f'Logged in as {client.user} (ID: {client.user.id})')
         channel = client.get_channel(client.mud_channel)
-        await channel.send('Bot is online')
+        if channel:
+            await channel.send('Bot is online')
+        else:
+            print(f'Warning: Channel {client.mud_channel} not found')
         print('------')
         await mud_connect()
-        mud_manager.start()
+        asyncio.create_task(mud_manager())
+        asyncio.create_task(periodic_who())
 
     @client.event
     async def on_message(message):
         if message.author == client.user or message.channel.id != client.mud_channel:
             return
+        if client.to_mud is None:
+            return
         try:
             client.to_mud.write(f'gossip {message.author.name}: {message.content}\n'.encode())
             await client.to_mud.drain()
-        except Exception as e:
-            print(e)
+        except ConnectionError as e:
+            print(f'Connection error sending message: {e}')
             await mud_connect()
 
-    @client.event
     async def mud_connect():
-        client.from_mud, client.to_mud = await asyncio.open_connection(config.mud_host, config.mud_port)
-        client.to_mud.write(str.encode(config.mud_user) + b'\n')
-        client.to_mud.write(str.encode(config.mud_password) + b'\n')
-        client.to_mud.write(b'\n1\n1\ngoto 1200\nprompt --END--%_\nwho\n')
-
-        await client.to_mud.drain()
-
-    @tasks.loop(seconds=1)
-    async def mud_manager():
+        if client.reconnecting:
+            return
+        client.reconnecting = True
         try:
-            channel = client.get_channel(client.mud_channel)
-            state = 0
-            while True:
+            if client.to_mud:
+                client.to_mud.close()
+            client.from_mud, client.to_mud = await asyncio.open_connection(config.mud_host, config.mud_port)
+            client.to_mud.write(str.encode(config.mud_user) + b'\n')
+            client.to_mud.write(str.encode(config.mud_password) + b'\n')
+            client.to_mud.write(b'\n1\n1\ngoto 1200\nprompt --END--%_\nwho\n')
+            await client.to_mud.drain()
+            print('Connected to MUD')
+        except Exception as e:
+            print(f'Failed to connect to MUD: {e}')
+            client.from_mud = None
+            client.to_mud = None
+        finally:
+            client.reconnecting = False
+
+    async def mud_manager():
+        state = 0
+        while True:
+            try:
+                if client.from_mud is None:
+                    await asyncio.sleep(1)
+                    continue
+                channel = client.get_channel(client.mud_channel)
+                if channel is None:
+                    print(f'Channel {client.mud_channel} not found')
+                    await asyncio.sleep(5)
+                    continue
                 data = await client.from_mud.readline()
                 if not data:
-                    break
+                    print('MUD connection closed, reconnecting...')
+                    await mud_connect()
+                    continue
                 line = data.decode('ascii', 'ignore')
                 escaped = client.ansi_escape.sub('', line).strip()
                 if escaped:
@@ -84,21 +109,25 @@ def main():
                         if re.match(r'^\w+ gossips, ', escaped):
                             print(f'From MUD Line: {escaped}')
                             await channel.send(escaped)
-                        elif line.startswith('The world seems to pause momentarily as'):
-                            username = line.split()[7]
-                            client.online.remove(username)
+                        elif escaped.startswith('The world seems to pause momentarily as'):
+                            username = escaped.split()[7]
+                            if username in client.online:
+                                client.online.remove(username)
                             await channel.send(f'{username} has logged out.')
-                        elif line.startswith('The ground shakes slightly with the arrival of'):
-                            username = line.split()[8].rstrip('.')
-                            client.online.append(username)
+                        elif escaped.startswith('The ground shakes slightly with the arrival of'):
+                            username = escaped.split()[8].rstrip('.')
+                            if username not in client.online:
+                                client.online.append(username)
                             await channel.send(f'{username} has logged in.')
                         elif re.match(r'^\w+ advanced to level \d+!', escaped):
                             await channel.send(escaped)
                         elif re.match(r'^\w+ lost level', escaped):
                             await channel.send(escaped)
                         elif match := re.match(r'^\[ (\w+) (was killed by [^[]+)', escaped):
-                            client.online.remove(match.group(1))
-                            await channel.send(f'{match.group(1)} {match.group(2)}!')
+                            username = match.group(1)
+                            if username in client.online:
+                                client.online.remove(username)
+                            await channel.send(f'{username} {match.group(2)}!')
                         elif escaped.startswith('*** Active'):
                             state = 1
                             client.online = []
@@ -110,13 +139,26 @@ def main():
                             if username not in client.online and username.lower() != client.mud_user.lower():
                                 client.online.append(matches.group(1))
 
-        except Exception as e:
-            print(e)
-            await mud_connect()
+            except ConnectionError as e:
+                print(f'Connection error: {e}, reconnecting...')
+                await mud_connect()
+            except Exception as e:
+                print(f'Error in mud_manager: {e}')
+                await asyncio.sleep(1)
+
+    async def periodic_who():
+        while True:
+            await asyncio.sleep(600)  # 10 minutes
+            if client.to_mud:
+                try:
+                    client.to_mud.write(b'who\n')
+                    await client.to_mud.drain()
+                except ConnectionError:
+                    pass  # mud_manager will handle reconnection
 
     @client.tree.command()
     async def who(interaction: discord.Interaction):
-        """Adds a bug to the todo list."""
+        """Lists currently online players."""
         if client.online:
             await interaction.response.send_message('\n'.join(client.online))
         else:
