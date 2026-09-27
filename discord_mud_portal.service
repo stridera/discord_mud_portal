@@ -1,0 +1,16 @@
+[Unit]
+Description=Discord <-> MUD portal bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# User=discord_mud_portal
+WorkingDirectory=/opt/scripts/discord_mud_portal
+EnvironmentFile=-/opt/scripts/discord_mud_portal/.env
+ExecStart=/opt/scripts/discord_mud_portal/.venv/bin/python main.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

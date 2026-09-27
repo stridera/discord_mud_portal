@@ -1,0 +1,80 @@
+# MUD-specific protocol strings and line-matching rules for FieryMUD.
+# See Readme.md for the file format if you need to adapt this to another MUD.
+
+[login]
+# Lines sent (each followed by a newline), in order, right after connecting.
+# {user}, {password}, {room} are substituted from the bot's configuration.
+sequence = ["{user}", "{password}", "", "1", "1", "goto {room}", "prompt --END--%_", "who"]
+prompt_end = "--END--"
+quit_command = "quit"
+
+[who]
+start_prefix = "*** Active"
+entry = '^\[[^]]+\] (?P<name>\w+)'
+
+# Events are matched in order against every non-who-list line from the MUD;
+# the first pattern that matches wins (later ones are not tried).
+#
+# - pattern: a regex, optionally with named groups `name` and/or `text`.
+# - message: a Python str.format() template using the named groups. If
+#   omitted, the whole (stripped) line is relayed as-is.
+# - action: "login"/"logout" add/remove the `name` group from the online
+#   list; "none" (the default) leaves the online list untouched.
+# - kind: "gossip" lines are eligible for the webhook (so they can appear
+#   under the speaking player's name); anything else ("event", the default)
+#   always goes through the bot.
+
+[[events]]
+name = "gossip"
+pattern = '^(?P<name>\w+) gossips, (?P<text>.*)$'
+kind = "gossip"
+
+[[events]]
+name = "login"
+pattern = '^The ground shakes slightly with the arrival of (?P<name>\w+)\.?'
+message = "{name} has logged in."
+action = "login"
+
+[[events]]
+name = "logout"
+pattern = '^The world seems to pause momentarily as (?P<name>\w+)\b'
+message = "{name} has logged out."
+action = "logout"
+
+[[events]]
+name = "levelup"
+pattern = '^\w+ advanced to level \d+!'
+
+[[events]]
+name = "leveldown"
+pattern = '^\w+ lost level'
+
+[[events]]
+name = "death"
+pattern = '^\[ (?P<name>\w+) (?P<rest>was killed by [^[]+)'
+message = "{name} {rest}!"
+action = "logout"
+
+[outbound]
+# Template used to relay a Discord message to the MUD as a gossip.
+#
+# Color codes (src/screen.cpp): 0 normal, 1-7 red/green/yellow/blue/
+# magenta/cyan/white, b bold, u underline, d dim, _ newline, && and @@ are
+# literal '&'/'@'. &b bolds the speaker's name; &0 clears bold again; &3
+# (yellow) restores the gossip channel's own color for the rest of the
+# line, since the MUD colors the whole gossip line yellow (FYEL, see
+# fierymud_legacy/src/act.comm.cpp) and &0 alone would leave the message
+# text in the default color instead.
+#
+# {name} and {text} are the Discord display name and message text; both
+# are already sanitized and had MUD color codes ('&'/'@') escaped before
+# being substituted in here, so do not escape them again in this template.
+# This also covers '&_' (the MUD's own newline code): without doubling the
+# '&', a message containing "&_Chinok gossips, 'x'" would forge a second,
+# attacker-controlled line; escaped to '&&_...' it's just literal text.
+#
+# Note: the MUD strips color codes from gossip lines spoken by ordinary
+# (non-immortal) players, but not from immortals - the bot's MUD character
+# is an immortal, so without the &&/@@ escaping above, a player's raw '&'
+# or '@' really would be interpreted as a color code here.
+gossip = "gossip &b{name}&0&3: {text}"
